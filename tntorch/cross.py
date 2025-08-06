@@ -114,10 +114,10 @@ def init_interfaces(tensors, rsets, N, device):
     t_linterfaces = []
     t_rinterfaces = []
     for t in tensors:
-        linterfaces = [torch.ones(1, t.ranks_tt[0], dtype=t.dtype).to(device)] + [None] * (N - 1)
-        rinterfaces = [None] * (N - 1) + [torch.ones(t.ranks_tt[t.dim()], 1, dtype=t.dtype).to(device)]
+        linterfaces = [torch.ones(1, t.ranks_tt[0], dtype=t.cores[0].dtype).to(device)] + [None] * (N - 1)
+        rinterfaces = [None] * (N - 1) + [torch.ones(t.ranks_tt[t.dim()], 1, dtype=t.cores[0].dtype).to(device)]
         for j in range(N - 1):
-            M = torch.ones(t.cores[-1].shape[-1], len(rsets[j]), dtype=t.dtype).to(device)
+            M = torch.ones(t.cores[-1].shape[-1], len(rsets[j]), dtype=t.cores[0].dtype).to(device)
             for n in range(N - 1, j, -1):
                 if t.cores[n].dim() == 3:  # TT core
                     M = torch.einsum(
