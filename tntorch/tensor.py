@@ -855,7 +855,7 @@ class Tensor(object):
 
     @property
     def dtype(self):
-        return torch.dtype(self.cores[0].dtype)
+        return self.cores[0].dtype
 
     def b(self):
         if not self.batch:
