@@ -132,7 +132,7 @@ def transpose(t):
     return tn.Tensor(cores, Us, idxs)
 
 
-def meshgrid(*axes, batch=False):
+def meshgrid(*axes, batch=False, dtype=None):
     """
     See NumPy's or PyTorch's `meshgrid()`.
 
@@ -140,6 +140,9 @@ def meshgrid(*axes, batch=False):
 
     :return: a list of N :class:`Tensor`, of N dimensions each
     """
+
+    if dtype is None:
+        dtype = torch.get_default_dtype()
 
     device = None
     if not hasattr(axes, "__len__"):
@@ -152,15 +155,15 @@ def meshgrid(*axes, batch=False):
     N = len(axes)
     for n in range(N):
         if not hasattr(axes[n], "__len__"):
-            axes[n] = torch.arange(axes[n], dtype=torch.get_default_dtype())
+            axes[n] = torch.arange(axes[n], dtype=dtype)
 
     tensors = []
     for n in range(N):
-        cores = [torch.ones(1, len(ax), 1).to(device) for ax in axes]
+        cores = [torch.ones(1, len(ax), 1, dtype=dtype).to(device) for ax in axes]
         if isinstance(axes[n], torch.Tensor):
-            cores[n] = axes[n].type(torch.get_default_dtype())
+            cores[n] = axes[n].type(dtype)
         else:
-            cores[n] = torch.tensor(axes[n].type(torch.get_default_dtype()))
+            cores[n] = torch.tensor(axes[n].type(dtype))
         cores[n] = cores[n][None, :, None].to(device)
         tensors.append(tn.Tensor(cores, device=device, batch=batch))
     return tensors
