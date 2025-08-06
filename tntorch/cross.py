@@ -201,13 +201,6 @@ def cross(
         else:
             device = tensors.cores[0].device
 
-    dtype = torch.get_default_dtype()
-    if tensors is not None:
-        if type(tensors) == list:
-            dtype = tensors[0].cores[0].dtype
-        else:
-            device = tensors.cores[0].dtype
-
     if verbose:
         print("cross device is", device)
 
@@ -256,7 +249,7 @@ def cross(
         f = build_function_wrapper(f)
 
     if tensors is None:
-        tensors = tn.meshgrid(domain, dtype=dtype)
+        tensors = tn.meshgrid(domain, dtype=domain[0].dtype)
 
     if not hasattr(tensors, "__len__"):
         tensors = [tensors]
