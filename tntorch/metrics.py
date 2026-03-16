@@ -16,11 +16,11 @@ def _process(gt, approx):
         return gt, approx
     if is1:
         if gt.batch:
-            raise ValueError("Batched tensors are not supproted.")
+            raise ValueError("Batched tensors are not supported.")
         gt = gt.torch()
     if is2:
         if approx.batch:
-            raise ValueError("Batched tensors are not supproted.")
+            raise ValueError("Batched tensors are not supported.")
         approx = approx.torch()
     return gt, approx
 
@@ -63,7 +63,53 @@ def dot(t1, t2, k=None):
         else:
             return torch.einsum("sr,ar->sar", (M, core))
 
-    t1, t2 = _process(t1, t2)
+    def _dot_mixed_left(tleft, tright, k):
+        """Contract a compressed left operand against a dense right operand without densifying the tensor network."""
+        tleft = tleft.tt()
+        acc = tright.unsqueeze(0)
+        for mu in range(k):
+            acc = torch.einsum("aib,ai...->b...", (tleft.cores[mu].conj(), acc))
+        for mu in range(k, tleft.dim()):
+            acc = torch.einsum("aib,a...->bi...", (tleft.cores[mu].conj(), acc))
+        return torch.squeeze(acc, 0)
+
+    def _dot_mixed_right(tleft, tright, k):
+        """Contract a dense left operand against a compressed right operand without densifying the tensor network."""
+        tright = tright.tt()
+        acc = tleft.conj().unsqueeze(-1)
+        for mu in range(k):
+            acc = torch.einsum("i...a,aib->...b", (acc, tright.cores[mu]))
+        if tleft.dim() > k + 1:
+            acc = acc.permute(
+                list(range(acc.dim() - 2, -1, -1)) + [acc.dim() - 1]
+            )
+        for mu in range(k, tright.dim()):
+            acc = torch.einsum("...a,aib->...ib", (acc, tright.cores[mu]))
+        return torch.squeeze(acc, -1)
+
+    is_t1_tn = isinstance(t1, tn.Tensor)
+    is_t2_tn = isinstance(t2, tn.Tensor)
+    is_t1_torch = isinstance(t1, torch.Tensor)
+    is_t2_torch = isinstance(t2, torch.Tensor)
+
+    if (is_t1_tn and is_t2_torch) or (is_t1_torch and is_t2_tn):
+        if is_t1_tn and t1.batch:
+            raise ValueError("Batched tensors are not supported.")
+        if is_t2_tn and t2.batch:
+            raise ValueError("Batched tensors are not supported.")
+        if k is None:
+            k = min(t1.dim(), t2.dim())
+        assert k <= t1.dim() and k <= t2.dim()
+        if not np.array_equal(t1.shape[:k], t2.shape[:k]):
+            raise ValueError(
+                "Dot product requires leading dimensions to be equal, but they are {} and {}".format(
+                    t1.shape[:k], t2.shape[:k]
+                )
+            )
+        if is_t1_tn:
+            return _dot_mixed_left(t1, t2, k)
+        return _dot_mixed_right(t1, t2, k)
+
     if k is None:
         k = min(t1.dim(), t2.dim())
     assert k <= t1.dim() and k <= t2.dim()
@@ -212,7 +258,7 @@ def sum(t, dim=None, keepdim=False, _normalize=False):
     :return: a scalar (if keepdim is False and all dims were chosen) or :class:`Tensor` otherwise
     """
     if t.batch:
-        raise ValueError("Batched tensors are not supproted.")
+        raise ValueError("Batched tensors are not supported.")
 
     if dim is None:
         dim = np.arange(t.dim())

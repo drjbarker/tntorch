@@ -1,4 +1,5 @@
 import numpy as np
+import pytest
 import tntorch as tn
 import torch
 torch.set_default_dtype(torch.float64)
@@ -82,6 +83,54 @@ def test_dot():
         check()
 
 
+@pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
+def test_dot_mixed_path_avoids_decompression(monkeypatch, dtype):
+    """Mixed dot products should contract directly without calling Tensor.torch() on the compressed operand."""
+
+    def rand_tensor(shape):
+        if dtype.is_complex:
+            return torch.complex(
+                torch.randn(shape, dtype=torch.float64),
+                torch.randn(shape, dtype=torch.float64),
+            ).to(dtype)
+        return torch.randn(shape, dtype=dtype)
+
+    def dense_dot(left, right, k):
+        result = torch.tensordot(
+            left.conj(), right, dims=(list(range(k)), list(range(k)))
+        )
+        left_trailing = left.dim() - k
+        if left_trailing > 1:
+            result = result.permute(
+                list(range(left_trailing - 1, -1, -1))
+                + list(range(left_trailing, result.dim()))
+            )
+        return result
+
+    left_dense = rand_tensor((3, 4, 2, 6))
+    right_dense = rand_tensor((3, 4, 5, 7))
+    left_tensor = tn.Tensor(left_dense, ranks_tt=[3, 4, 3])
+    right_tensor = tn.Tensor(right_dense, ranks_tt=[3, 4, 3])
+    left_reference = left_tensor.torch()
+    right_reference = right_tensor.torch()
+    original_torch = tn.Tensor.torch
+
+    def fail_on_test_tensors(self):
+        if self is left_tensor or self is right_tensor:
+            raise AssertionError("mixed dot path should not decompress tn.Tensor")
+        return original_torch(self)
+
+    monkeypatch.setattr(tn.Tensor, "torch", fail_on_test_tensors)
+
+    result_left = tn.dot(left_tensor, right_dense, k=2)
+    expected_left = dense_dot(left_reference, right_dense, 2)
+    assert torch.allclose(result_left, expected_left)
+
+    result_right = tn.dot(left_dense, right_tensor, k=2)
+    expected_right = dense_dot(left_dense, right_reference, 2)
+    assert torch.allclose(result_right, expected_right)
+
+
 def test_stats():
 
     def check():
@@ -94,4 +143,3 @@ def test_stats():
     for i in range(100):
         t = random_format(shape)
         check()
-
