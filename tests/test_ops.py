@@ -131,6 +131,80 @@ def test_dot_mixed_path_avoids_decompression(monkeypatch, dtype):
     assert torch.allclose(result_right, expected_right)
 
 
+@pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
+def test_dist_mixed_path_avoids_decompression(monkeypatch, dtype):
+    """Mixed distances should use dot-based contraction without calling Tensor.torch() on the compressed operand."""
+
+    def rand_tensor(shape):
+        if dtype.is_complex:
+            return torch.complex(
+                torch.randn(shape, dtype=torch.float64),
+                torch.randn(shape, dtype=torch.float64),
+            ).to(dtype)
+        return torch.randn(shape, dtype=dtype)
+
+    dense = rand_tensor((3, 4, 2))
+    compressed = tn.Tensor(rand_tensor((3, 4, 2)), ranks_tt=[3, 2])
+    compressed_reference = compressed.torch()
+    original_torch = tn.Tensor.torch
+
+    def fail_on_test_tensor(self):
+        if self is compressed:
+            raise AssertionError("mixed dist path should not decompress tn.Tensor")
+        return original_torch(self)
+
+    monkeypatch.setattr(tn.Tensor, "torch", fail_on_test_tensor)
+
+    expected = torch.linalg.norm(compressed_reference - dense)
+    assert torch.allclose(tn.dist(compressed, dense), expected)
+    assert torch.allclose(tn.dist(dense, compressed), expected)
+
+
+@pytest.mark.parametrize("dtype", [torch.float64, torch.complex128])
+def test_mixed_metrics_avoid_decompression(monkeypatch, dtype):
+    """Mixed relative-error-style metrics should not call Tensor.torch() on the compressed operand."""
+
+    def rand_tensor(shape):
+        if dtype.is_complex:
+            return torch.complex(
+                torch.randn(shape, dtype=torch.float64),
+                torch.randn(shape, dtype=torch.float64),
+            ).to(dtype)
+        return torch.randn(shape, dtype=dtype)
+
+    dense = rand_tensor((3, 4, 2))
+    compressed = tn.Tensor(rand_tensor((3, 4, 2)), ranks_tt=[3, 2])
+    compressed_reference = compressed.torch()
+    original_torch = tn.Tensor.torch
+
+    def fail_on_test_tensor(self):
+        if self is compressed:
+            raise AssertionError(
+                "mixed metric path should not decompress tn.Tensor"
+            )
+        return original_torch(self)
+
+    monkeypatch.setattr(tn.Tensor, "torch", fail_on_test_tensor)
+
+    expected_relative_error = torch.linalg.norm(
+        compressed_reference - dense
+    ) / torch.linalg.norm(compressed_reference)
+    expected_rmse = torch.linalg.norm(compressed_reference - dense) / np.sqrt(
+        compressed_reference.numel()
+    )
+    expected_r_squared = 1 - torch.linalg.norm(
+        compressed_reference - dense
+    ) ** 2 / torch.linalg.norm(
+        compressed_reference - torch.mean(compressed_reference)
+    ) ** 2
+
+    assert torch.allclose(
+        tn.relative_error(compressed, dense), expected_relative_error
+    )
+    assert torch.allclose(tn.rmse(compressed, dense), expected_rmse)
+    assert torch.allclose(tn.r_squared(compressed, dense), expected_r_squared)
+
+
 def test_stats():
 
     def check():

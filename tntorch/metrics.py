@@ -4,25 +4,11 @@ import torch
 import tntorch as tn
 
 
-def _process(gt, approx):
-    """
-    If *only one* of the arguments is a compressed tensor, we decompress it
-    """
-
-    # assert np.array_equal(gt.shape, approx.shape)
-    is1 = isinstance(gt, tn.Tensor)
-    is2 = isinstance(approx, tn.Tensor)
-    if is1 and is2:
-        return gt, approx
-    if is1:
-        if gt.batch:
+def _ensure_nonbatched(*args):
+    """Raise when any metric input is a batched tensor-network tensor."""
+    for arg in args:
+        if isinstance(arg, tn.Tensor) and arg.batch:
             raise ValueError("Batched tensors are not supported.")
-        gt = gt.torch()
-    if is2:
-        if approx.batch:
-            raise ValueError("Batched tensors are not supported.")
-        approx = approx.torch()
-    return gt, approx
 
 
 def dot(t1, t2, k=None):
@@ -71,7 +57,7 @@ def dot(t1, t2, k=None):
             acc = torch.einsum("aib,ai...->b...", (tleft.cores[mu].conj(), acc))
         for mu in range(k, tleft.dim()):
             acc = torch.einsum("aib,a...->bi...", (tleft.cores[mu].conj(), acc))
-        return torch.squeeze(acc, 0)
+        return torch.sum(acc, dim=0)
 
     def _dot_mixed_right(tleft, tright, k):
         """Contract a dense left operand against a compressed right operand without densifying the tensor network."""
@@ -85,18 +71,15 @@ def dot(t1, t2, k=None):
             )
         for mu in range(k, tright.dim()):
             acc = torch.einsum("...a,aib->...ib", (acc, tright.cores[mu]))
-        return torch.squeeze(acc, -1)
+        return torch.sum(acc, dim=-1)
 
     is_t1_tn = isinstance(t1, tn.Tensor)
     is_t2_tn = isinstance(t2, tn.Tensor)
     is_t1_torch = isinstance(t1, torch.Tensor)
     is_t2_torch = isinstance(t2, torch.Tensor)
+    _ensure_nonbatched(t1, t2)
 
     if (is_t1_tn and is_t2_torch) or (is_t1_torch and is_t2_tn):
-        if is_t1_tn and t1.batch:
-            raise ValueError("Batched tensors are not supported.")
-        if is_t2_tn and t2.batch:
-            raise ValueError("Batched tensors are not supported.")
         if k is None:
             k = min(t1.dim(), t2.dim())
         assert k <= t1.dim() and k <= t2.dim()
@@ -188,9 +171,7 @@ def dist(t1, t2):
     :return: a scalar :math:`\ge 0`
     """
 
-    t1, t2 = _process(t1, t2)
-    if isinstance(t1, torch.Tensor) and isinstance(t2, torch.Tensor):
-        return torch.dist(t1, t2)
+    _ensure_nonbatched(t1, t2)
     sqdist = torch.real(tn.dot(t1, t1) + tn.dot(t2, t2) - 2 * tn.dot(t1, t2))
     return torch.sqrt(torch.clamp(sqdist, min=0))
 
@@ -205,14 +186,8 @@ def relative_error(gt, approx):
     :return: a scalar :math:`\ge 0`
     """
 
-    gt, approx = _process(gt, approx)
-    if isinstance(gt, torch.Tensor) and isinstance(approx, torch.Tensor):
-        return torch.dist(gt, approx) / torch.norm(gt)
-    dotgt = tn.dot(gt, gt)
-    sqerror = torch.real(dotgt + tn.dot(approx, approx) - 2 * tn.dot(gt, approx))
-    return torch.sqrt(
-        torch.clamp(sqerror, min=0)
-    ) / torch.sqrt(torch.clamp(torch.real(dotgt), min=0))
+    _ensure_nonbatched(gt, approx)
+    return tn.dist(gt, approx) / tn.norm(gt)
 
 
 def rmse(gt, approx):
@@ -225,9 +200,9 @@ def rmse(gt, approx):
     :return: a scalar :math:`\ge 0`
     """
 
-    gt, approx = _process(gt, approx)
-    if isinstance(gt, torch.Tensor) and isinstance(approx, torch.Tensor):
-        return torch.dist(gt, approx) / np.sqrt(gt.numel())
+    _ensure_nonbatched(gt, approx)
+    if isinstance(gt, torch.Tensor):
+        return tn.dist(gt, approx) / np.sqrt(gt.numel())
     return tn.dist(gt, approx) / torch.sqrt(gt.numel())
 
 
@@ -241,10 +216,12 @@ def r_squared(gt, approx):
     :return: a scalar <= 1
     """
 
-    gt, approx = _process(gt, approx)
-    if isinstance(gt, torch.Tensor) and isinstance(approx, torch.Tensor):
-        return 1 - torch.dist(gt, approx) ** 2 / torch.dist(gt, torch.mean(gt)) ** 2
-    return 1 - tn.dist(gt, approx) ** 2 / tn.normsq(gt - tn.mean(gt))
+    _ensure_nonbatched(gt, approx)
+    mean_gt = tn.mean(gt)
+    centered_normsq = torch.real(
+        tn.dot(gt, gt) - gt.numel() * (mean_gt.conj() * mean_gt)
+    )
+    return 1 - tn.dist(gt, approx) ** 2 / torch.clamp(centered_normsq, min=0)
 
 
 def sum(t, dim=None, keepdim=False, _normalize=False):
@@ -257,8 +234,7 @@ def sum(t, dim=None, keepdim=False, _normalize=False):
 
     :return: a scalar (if keepdim is False and all dims were chosen) or :class:`Tensor` otherwise
     """
-    if t.batch:
-        raise ValueError("Batched tensors are not supported.")
+    _ensure_nonbatched(t)
 
     if dim is None:
         dim = np.arange(t.dim())
@@ -460,8 +436,7 @@ def hadamard_sum(ts, algorithm="exact", eps=None):
     M = len(ts)
     tstt = []
     for m in range(M):  # Convert everything to the TT format
-        if ts[m].batch:
-            raise ValueError("Batched tensors are not supported.")
+        _ensure_nonbatched(ts[m])
 
         t = ts[m].decompress_tucker_factors()
         t._cp_to_tt()
