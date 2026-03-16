@@ -388,7 +388,7 @@ def cross(
                 local, _ = rect_maxvol(Q.detach().cpu().numpy(), maxK=Q.shape[1])
             else:
                 local, _ = maxvol(Q.detach().cpu().numpy())
-            V = torch.linalg.lstsq(Q[local, :].t(), Q.t()).solution.t()
+            V = torch.linalg.solve(Q[local, :].t(), Q.t()).t()
             cores[j] = torch.reshape(V, [Rs[j], Is[j], Rs[j + 1]])
             left_locals.append(local)
 
@@ -420,7 +420,7 @@ def cross(
                 local, _ = rect_maxvol(Q.detach().cpu().numpy(), maxK=Q.shape[1])
             else:
                 local, _ = maxvol(Q.detach().cpu().numpy())
-            V = torch.linalg.lstsq(Q[local, :].t(), Q.t()).solution
+            V = torch.linalg.solve(Q[local, :].t(), Q.t())
             cores[j] = torch.reshape(torch.as_tensor(V), [Rs[j], Is[j], Rs[j + 1]])
 
             # Map local indices to global ones
