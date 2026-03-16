@@ -64,9 +64,6 @@ def dot(t1, t2, k=None):
             return torch.einsum("sr,ar->sar", (M, core))
 
     t1, t2 = _process(t1, t2)
-    if isinstance(t1, torch.Tensor) and isinstance(t2, torch.Tensor):
-        return t1.flatten().dot(t2.flatten())
-    Lprod = torch.ones([t2.ranks_tt[0], t1.ranks_tt[0]], device=t1.cores[0].device)
     if k is None:
         k = min(t1.dim(), t2.dim())
     assert k <= t1.dim() and k <= t2.dim()
@@ -76,6 +73,25 @@ def dot(t1, t2, k=None):
                 t1.shape[:k], t2.shape[:k]
             )
         )
+    if isinstance(t1, torch.Tensor) and isinstance(t2, torch.Tensor):
+        return torch.sum(t1.conj() * t2)
+    if k == t1.dim() and k == t2.dim():
+        t1tt = t1.tt()
+        t2tt = t2.tt()
+        dtype = torch.promote_types(t1tt.dtype, t2tt.dtype)
+        Lprod = torch.ones(
+            [t2tt.ranks_tt[0], t1tt.ranks_tt[0]],
+            device=t1tt.cores[0].device,
+            dtype=dtype,
+        )
+        for mu in range(k):
+            Ucore = torch.einsum("sr,rai->sai", (Lprod, t1tt.cores[mu].conj()))
+            Lprod = torch.einsum("saj,sak->jk", (t2tt.cores[mu], Ucore))
+        return torch.sum(Lprod)
+    dtype = torch.promote_types(t1.cores[0].dtype, t2.cores[0].dtype)
+    Lprod = torch.ones(
+        [t2.ranks_tt[0], t1.ranks_tt[0]], device=t1.cores[0].device, dtype=dtype
+    )
 
     # Crunch first k dimensions of both tensors
     for mu in range(k):
@@ -129,7 +145,8 @@ def dist(t1, t2):
     t1, t2 = _process(t1, t2)
     if isinstance(t1, torch.Tensor) and isinstance(t2, torch.Tensor):
         return torch.dist(t1, t2)
-    return torch.sqrt(tn.dot(t1, t1) + tn.dot(t2, t2) - 2 * tn.dot(t1, t2).clamp(0))
+    sqdist = torch.real(tn.dot(t1, t1) + tn.dot(t2, t2) - 2 * tn.dot(t1, t2))
+    return torch.sqrt(torch.clamp(sqdist, min=0))
 
 
 def relative_error(gt, approx):
@@ -146,9 +163,10 @@ def relative_error(gt, approx):
     if isinstance(gt, torch.Tensor) and isinstance(approx, torch.Tensor):
         return torch.dist(gt, approx) / torch.norm(gt)
     dotgt = tn.dot(gt, gt)
+    sqerror = torch.real(dotgt + tn.dot(approx, approx) - 2 * tn.dot(gt, approx))
     return torch.sqrt(
-        (dotgt + tn.dot(approx, approx) - 2 * tn.dot(gt, approx)).clamp(0)
-    ) / torch.sqrt(dotgt.clamp(0))
+        torch.clamp(sqerror, min=0)
+    ) / torch.sqrt(torch.clamp(torch.real(dotgt), min=0))
 
 
 def rmse(gt, approx):
@@ -475,4 +493,6 @@ def norm(t):
     :return: a scalar :math:`\ge 0`
     """
 
-    return torch.sqrt(torch.clamp(tn.normsq(t), min=0))
+    if isinstance(t, torch.Tensor):
+        return torch.linalg.norm(t)
+    return torch.sqrt(torch.clamp(torch.real(tn.normsq(t)), min=0))
