@@ -213,21 +213,25 @@ class Tensor(object):
                 if ranks_cp is not None or ranks_tucker is not None or ranks_tt is not None:
                     raise ValueError("Specify eps or ranks, but not both")
 
+            physical_shape = data.shape[1:] if batch else data.shape
             use_binary_tt_svd = (
                 not batch
                 and algorithm == "svd"
                 and ranks_cp is None
                 and ranks_tucker is None
-                and data.dim() > 0
-                and all(mode == 2 for mode in data.shape)
+                and len(physical_shape) > 0
+                and all(mode == 2 for mode in physical_shape)
                 and eps is not None
             )
 
             if use_binary_tt_svd:
                 from tntorch.round import _binary_tt_svd
 
-                delta = eps * torch.norm(data).item()
-                tt = _binary_tt_svd(data, delta=delta, rmax=ranks_tt)
+                if batch:
+                    delta = 0.0
+                else:
+                    delta = 0.0 if eps is None else eps * torch.norm(data).item()
+                tt = _binary_tt_svd(data, delta=delta, rmax=ranks_tt, batch=batch)
                 self.cores = tt.cores
                 self.Us = [None] * len(self.cores)
                 binary_tt_eps = eps

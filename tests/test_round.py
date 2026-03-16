@@ -46,6 +46,19 @@ def test_truncated_svd_binary_tensor():
     assert torch.allclose(tt.torch(), gt, atol=1e-10, rtol=1e-10)
 
 
+def test_truncated_svd_binary_tensor_batch():
+    gt = torch.rand((3, 2, 2, 2, 2))
+    tt = tn.truncated_svd(gt, rmax=4, algorithm='svd', batch=True)
+
+    assert isinstance(tt, tn.Tensor)
+    assert torch.allclose(tt.torch(), gt, atol=1e-10, rtol=1e-10)
+
+    for i in range(len(gt)):
+        single = tn.truncated_svd(gt[i], rmax=4, algorithm='svd')
+        for j, core in enumerate(single.cores):
+            assert torch.allclose(core, tt.cores[j][i, ...])
+
+
 def test_tensor_binary_svd_init():
     gt = torch.rand((2, 2, 2, 2))
     tt = tn.Tensor(gt, eps=1e-12, algorithm='svd')
