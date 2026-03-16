@@ -31,6 +31,11 @@ setup(
         'scipy',
         'torch>=1.11',
     ],
+    extras_require={
+        'test': [
+            'pytest',
+        ],
+    },
     license="LGPL",
     zip_safe=False,
     keywords='tntorch',
@@ -44,5 +49,7 @@ setup(
         'Programming Language :: Python :: 3.6',
     ],
     test_suite='tests',
-    tests_require='pytest'
+    tests_require=[
+        'pytest',
+    ]
 )
