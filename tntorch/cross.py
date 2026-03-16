@@ -7,6 +7,7 @@ import numpy as np
 import torch
 
 import tntorch as tn
+from tntorch.maxvol import py_maxvol, py_rect_maxvol
 
 
 def minimum(
@@ -204,21 +205,8 @@ def cross(
     if verbose:
         print("cross device is", device)
 
-    try:
-        import maxvolpy.maxvol
-
-        maxvol = maxvolpy.maxvol.maxvol
-        rect_maxvol = maxvolpy.maxvol.rect_maxvol
-    except ModuleNotFoundError:
-        print(
-            "Functions that require cross-approximation can be accelerated with the optional maxvolpy package,"
-            + " which can be installed by 'pip install maxvolpy'. "
-            + "More info is available at https://bitbucket.org/muxas/maxvolpy."
-        )
-        from tntorch.maxvol import py_maxvol, py_rect_maxvol
-
-        maxvol = py_maxvol
-        rect_maxvol = py_rect_maxvol
+    maxvol = py_maxvol
+    rect_maxvol = py_rect_maxvol
 
     assert domain is not None or tensors is not None
     assert function_arg in ("vectors", "matrix")
