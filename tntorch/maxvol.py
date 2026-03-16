@@ -24,6 +24,7 @@
 # the original package as it has faster cython based implementations.
 
 import numpy as np
+import torch
 from scipy.linalg import get_blas_funcs, get_lapack_funcs
 
 
@@ -182,3 +183,123 @@ def py_maxvol(A, tol=1.05, max_iters=100, top_k_index=-1):
         iters += 1
         i, j, max_abs = _argmax_abs2(C, top_k_index, abs_buffer)
     return index[:r].copy(), C.T
+
+
+def torch_maxvol(A, tol=1.05, max_iters=100, top_k_index=-1):
+    """
+    Torch implementation of 1-volume maximization.
+    Returns Torch tensors on the same device as the input.
+    """
+    if tol < 1:
+        tol = 1.0
+    N, r = A.shape
+    if N <= r:
+        return (
+            torch.arange(N, dtype=torch.long, device=A.device),
+            torch.eye(N, dtype=A.dtype, device=A.device),
+        )
+    if top_k_index == -1 or top_k_index > N:
+        top_k_index = N
+    if top_k_index < r:
+        top_k_index = r
+
+    _, pivots, info = torch.linalg.lu_factor_ex(A[:top_k_index].clone(), check_errors=False)
+    index = torch.arange(N, dtype=torch.long, device=A.device)
+    pivots = pivots.to(torch.long) - 1
+    for i in range(r):
+        pivot = pivots[i]
+        tmp = index[i].clone()
+        index[i] = index[pivot]
+        index[pivot] = tmp
+
+    C = torch.linalg.solve(A[index[:r]].mT, A.mT).mT.contiguous()
+    flat_index = C[:top_k_index].abs().argmax()
+    i = torch.div(flat_index, r, rounding_mode="floor")
+    j = flat_index.remainder(r)
+    max_abs = C[i, j].abs()
+
+    iters = 0
+    while bool(max_abs > tol) and iters < max_iters:
+        index[j] = i
+        tmp_row = C[:, j].clone()
+        tmp_column = C[i].clone()
+        tmp_column[j] -= 1.0
+        C += (-1.0 / C[i, j]) * torch.outer(tmp_row, tmp_column)
+        iters += 1
+        flat_index = C[:top_k_index].abs().argmax()
+        i = torch.div(flat_index, r, rounding_mode="floor")
+        j = flat_index.remainder(r)
+        max_abs = C[i, j].abs()
+    return index[:r].clone(), C
+
+
+def torch_rect_maxvol(
+    A,
+    tol=1.0,
+    maxK=None,
+    min_add_K=None,
+    minK=None,
+    start_maxvol_iters=10,
+    identity_submatrix=True,
+    top_k_index=-1,
+):
+    """
+    Torch implementation of rectangular 2-volume maximization.
+    Returns Torch tensors on the same device as the input.
+    """
+    tol2 = tol**2
+    N, r = A.shape
+    if N <= r:
+        return (
+            torch.arange(N, dtype=torch.long, device=A.device),
+            torch.eye(N, dtype=A.dtype, device=A.device),
+        )
+    if maxK is None or maxK > N:
+        maxK = N
+    if maxK < r:
+        maxK = r
+    if minK is None or minK < r:
+        minK = r
+    if minK > N:
+        minK = N
+    if min_add_K is not None:
+        minK = max(minK, r + min_add_K)
+    if minK > maxK:
+        minK = maxK
+    if top_k_index == -1 or top_k_index > N:
+        top_k_index = N
+    if top_k_index < r:
+        top_k_index = r
+
+    index = torch.zeros(maxK, dtype=torch.long, device=A.device)
+    chosen = torch.ones(top_k_index, dtype=A.real.dtype, device=A.device)
+    tmp_index, C = torch_maxvol(A, 1.05, start_maxvol_iters, top_k_index)
+    index[:r] = tmp_index
+    chosen[tmp_index] = 0
+    if maxK > r:
+        C_full = torch.zeros((N, maxK), dtype=C.dtype, device=C.device)
+        C_full[:, :r] = C
+        C = C_full
+
+    row_norm_sqr = (C[:top_k_index, :r] * C[:top_k_index, :r].conj()).real.sum(dim=1)
+    row_norm_sqr.mul_(chosen)
+    i = row_norm_sqr.argmax()
+    K = r
+
+    while (bool(row_norm_sqr[i] > tol2) and K < maxK) or K < minK:
+        index[K] = i
+        chosen[i] = 0
+        C_current = C[:, :K]
+        c = C_current[i].clone()
+        v = C_current.matmul(c.conj())
+        l = 1.0 / (1 + v[i])
+        C_current += (-l) * torch.outer(v, c)
+        C[:, K] = l * v
+        row_norm_sqr.sub_((l * v[:top_k_index] * v[:top_k_index].conj()).real)
+        row_norm_sqr.mul_(chosen)
+        i = row_norm_sqr.argmax()
+        K += 1
+
+    if identity_submatrix:
+        C[index[:K], :K] = torch.eye(K, dtype=C.dtype, device=C.device)
+    return index[:K].clone(), C[:, :K].clone()

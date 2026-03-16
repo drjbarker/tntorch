@@ -1,6 +1,7 @@
 import numpy as np
+import torch
 
-from tntorch.maxvol import py_maxvol, py_rect_maxvol
+from tntorch.maxvol import py_maxvol, py_rect_maxvol, torch_maxvol, torch_rect_maxvol
 
 
 def _full_rank_matrix(seed, rows, cols, complex_dtype=False):
@@ -75,3 +76,67 @@ def test_py_rect_maxvol_min_add_k_forces_extra_rows():
     assert np.unique(index).size == len(index)
     assert np.all(index < top_k_index)
     np.testing.assert_allclose(C @ A[index], A, atol=1e-11, rtol=1e-11)
+
+
+def test_torch_maxvol_matches_py_maxvol_real_case():
+    A = _full_rank_matrix(seed=7, rows=20, cols=5)
+
+    index_np, C_np = py_maxvol(A, tol=1.05, max_iters=100)
+    index_torch, C_torch = torch_maxvol(torch.tensor(A), tol=1.05, max_iters=100)
+
+    np.testing.assert_array_equal(index_torch.cpu().numpy(), index_np)
+    np.testing.assert_allclose(C_torch.cpu().numpy(), C_np, atol=1e-12, rtol=1e-12)
+    np.testing.assert_allclose(C_torch.cpu().numpy() @ A[index_np], A, atol=1e-12, rtol=1e-12)
+    np.testing.assert_allclose(
+        C_torch[index_torch].cpu().numpy(), np.eye(A.shape[1]), atol=1e-12, rtol=1e-12
+    )
+
+
+def test_torch_maxvol_matches_py_maxvol_complex_case():
+    A = _full_rank_matrix(seed=8, rows=18, cols=4, complex_dtype=True)
+
+    index_np, C_np = py_maxvol(A, tol=1.05, max_iters=100)
+    index_torch, C_torch = torch_maxvol(torch.tensor(A), tol=1.05, max_iters=100)
+
+    np.testing.assert_array_equal(index_torch.cpu().numpy(), index_np)
+    np.testing.assert_allclose(C_torch.cpu().numpy(), C_np, atol=1e-12, rtol=1e-12)
+    np.testing.assert_allclose(C_torch.cpu().numpy() @ A[index_np], A, atol=1e-12, rtol=1e-12)
+    np.testing.assert_allclose(
+        C_torch[index_torch].cpu().numpy(), np.eye(A.shape[1]), atol=1e-12, rtol=1e-12
+    )
+
+
+def test_torch_rect_maxvol_matches_py_rect_maxvol_real_case():
+    A = _full_rank_matrix(seed=9, rows=18, cols=4)
+
+    index_np, C_np = py_rect_maxvol(A, tol=1.0, min_add_K=2, identity_submatrix=False)
+    index_torch, C_torch = torch_rect_maxvol(
+        torch.tensor(A), tol=1.0, min_add_K=2, identity_submatrix=False
+    )
+
+    np.testing.assert_array_equal(index_torch.cpu().numpy(), index_np)
+    np.testing.assert_allclose(C_torch.cpu().numpy(), C_np, atol=1e-11, rtol=1e-11)
+    np.testing.assert_allclose(
+        C_torch.cpu().numpy() @ A[index_np], A, atol=1e-11, rtol=1e-11
+    )
+
+
+def test_torch_rect_maxvol_matches_py_rect_maxvol_complex_case():
+    A = _full_rank_matrix(seed=10, rows=16, cols=3, complex_dtype=True)
+
+    index_np, C_np = py_rect_maxvol(A, tol=1.0, min_add_K=2, identity_submatrix=True)
+    index_torch, C_torch = torch_rect_maxvol(
+        torch.tensor(A), tol=1.0, min_add_K=2, identity_submatrix=True
+    )
+
+    np.testing.assert_array_equal(index_torch.cpu().numpy(), index_np)
+    np.testing.assert_allclose(C_torch.cpu().numpy(), C_np, atol=1e-11, rtol=1e-11)
+    np.testing.assert_allclose(
+        C_torch.cpu().numpy() @ A[index_np], A, atol=1e-11, rtol=1e-11
+    )
+    np.testing.assert_allclose(
+        C_torch[index_torch].cpu().numpy(),
+        np.eye(len(index_np)),
+        atol=1e-11,
+        rtol=1e-11,
+    )

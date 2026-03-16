@@ -7,7 +7,7 @@ import numpy as np
 import torch
 
 import tntorch as tn
-from tntorch.maxvol import py_maxvol, py_rect_maxvol
+from tntorch.maxvol import py_maxvol, py_rect_maxvol, torch_maxvol, torch_rect_maxvol
 
 
 def minimum(
@@ -202,12 +202,6 @@ def cross(
         else:
             device = tensors.cores[0].device
 
-    if verbose:
-        print("cross device is", device)
-
-    maxvol = py_maxvol
-    rect_maxvol = py_rect_maxvol
-
     assert domain is not None or tensors is not None
     assert function_arg in ("vectors", "matrix")
     if function_arg == "matrix":
@@ -245,8 +239,31 @@ def cross(
         if t.batch:
             raise ValueError("Batched tensors are not supported.")
     tensors = [t.decompress_tucker_factors(_clone=False) for t in tensors]
+    if device is None:
+        device = tensors[0].cores[0].device
+    else:
+        device = torch.device(device)
+
+    if verbose:
+        print("cross device is", device)
+
+    use_torch_maxvol = device.type != "cpu"
     Is = list(tensors[0].shape)
     N = len(Is)
+
+    def compute_maxvol(Q):
+        if use_torch_maxvol:
+            local, coeffs = torch_maxvol(Q)
+            return local, coeffs, local.detach().cpu().numpy()
+        local_np, coeffs = py_maxvol(Q.detach().cpu().numpy())
+        return torch.as_tensor(local_np, device=Q.device), coeffs, local_np
+
+    def compute_rect_maxvol(Q):
+        if use_torch_maxvol:
+            local, coeffs = torch_rect_maxvol(Q, maxK=Q.shape[1])
+            return local, coeffs, local.detach().cpu().numpy()
+        local_np, coeffs = py_rect_maxvol(Q.detach().cpu().numpy(), maxK=Q.shape[1])
+        return torch.as_tensor(local_np, device=Q.device), coeffs, local_np
 
     # Process ranks and cap them, if needed
     if ranks_tt is None:
@@ -337,7 +354,7 @@ def cross(
             )
             if info["min"] == 0 or eval_min < info["min"]:
                 coords = np.unravel_index(
-                    evaluation_argmax.cpu(), [Rs[j], Is[j], Rs[j + 1]]
+                    evaluation_argmax.detach().cpu().numpy(), [Rs[j], Is[j], Rs[j + 1]]
                 )
                 info["min"] = eval_min
                 info["argmin"] = (
@@ -385,15 +402,15 @@ def cross(
             V = torch.reshape(V, [-1, Rs[j + 1]])  # Left unfolding
             Q, _ = torch.linalg.qr(V)
             if _minimize:
-                local, _ = rect_maxvol(Q.detach().cpu().numpy(), maxK=Q.shape[1])
+                local, _, local_np = compute_rect_maxvol(Q)
             else:
-                local, _ = maxvol(Q.detach().cpu().numpy())
+                local, _, local_np = compute_maxvol(Q)
             V = torch.linalg.solve(Q[local, :].t(), Q.t()).t()
             cores[j] = torch.reshape(V, [Rs[j], Is[j], Rs[j + 1]])
-            left_locals.append(local)
+            left_locals.append(local_np)
 
             # Map local indices to global ones
-            local_r, local_i = np.unravel_index(local, [Rs[j], Is[j]])
+            local_r, local_i = np.unravel_index(local_np, [Rs[j], Is[j]])
             lsets[j + 1] = np.c_[lsets[j][local_r, :], local_i]
             for k, t in enumerate(tensors):
                 if t.cores[j].dim() == 3:  # TT core
@@ -417,14 +434,14 @@ def cross(
             V = torch.reshape(V, [Rs[j], -1])  # Right unfolding
             Q, _ = torch.linalg.qr(V.t())
             if _minimize:
-                local, _ = rect_maxvol(Q.detach().cpu().numpy(), maxK=Q.shape[1])
+                local, _, local_np = compute_rect_maxvol(Q)
             else:
-                local, _ = maxvol(Q.detach().cpu().numpy())
+                local, _, local_np = compute_maxvol(Q)
             V = torch.linalg.solve(Q[local, :].t(), Q.t())
-            cores[j] = torch.reshape(torch.as_tensor(V), [Rs[j], Is[j], Rs[j + 1]])
+            cores[j] = torch.reshape(V, [Rs[j], Is[j], Rs[j + 1]])
 
             # Map local indices to global ones
-            local_i, local_r = np.unravel_index(local, [Is[j], Rs[j + 1]])
+            local_i, local_r = np.unravel_index(local_np, [Is[j], Rs[j + 1]])
             rsets[j - 1] = np.c_[local_i, rsets[j][local_r, :]]
             for k, t in enumerate(tensors):
                 if t.cores[j].dim() == 3:  # TT core
@@ -502,9 +519,7 @@ def cross(
         )
         print()
 
-    ret = tn.Tensor(
-        [c if isinstance(c, torch.Tensor) else torch.tensor(c) for c in cores]
-    )
+    ret = tn.Tensor(cores)
     if return_info:
         info["lsets"] = lsets
         info["rsets"] = rsets
