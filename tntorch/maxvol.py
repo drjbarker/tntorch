@@ -27,6 +27,13 @@ import numpy as np
 from scipy.linalg import get_blas_funcs, get_lapack_funcs
 
 
+def _argmax_abs2(C, top_k_index, abs_buffer):
+    np.abs(C[:, :top_k_index], out=abs_buffer)
+    flat_index = abs_buffer.argmax()
+    i, j = divmod(flat_index, top_k_index)
+    return i, j, abs_buffer.flat[flat_index]
+
+
 def py_rect_maxvol(
     A,
     tol=1.0,
@@ -69,16 +76,19 @@ def py_rect_maxvol(
         top_k_index = r
     # choose initial submatrix and coefficients according to maxvol
     # algorithm
-    index = np.zeros(N, dtype=np.int32)
+    index = np.zeros(maxK, dtype=np.int32)
     chosen = np.ones(top_k_index)
     tmp_index, C = py_maxvol(A, 1.05, start_maxvol_iters, top_k_index)
     index[:r] = tmp_index
     chosen[tmp_index] = 0
     C = np.asfortranarray(C)
+    if maxK > r:
+        C_full = np.zeros((N, maxK), dtype=C.dtype, order="F")
+        C_full[:, :r] = C
+        C = C_full
     # compute square 2-norms of each row in coefficients matrix C
-    row_norm_sqr = np.array(
-        [chosen[i] * np.linalg.norm(C[i], 2) ** 2 for i in range(top_k_index)]
-    )
+    row_norm_sqr = np.sum((C[:top_k_index, :r] * C[:top_k_index, :r].conj()).real, axis=1)
+    row_norm_sqr *= chosen
     # find maximum value in row_norm_sqr
     i = np.argmax(row_norm_sqr)
     K = r
@@ -94,11 +104,12 @@ def py_rect_maxvol(
         # by SVM-formula
         index[K] = i
         chosen[i] = 0
-        c = C[i].copy()
-        v = C.dot(c.conj())
+        C_current = C[:, :K]
+        c = C_current[i].copy()
+        v = C_current.dot(c.conj())
         l = 1.0 / (1 + v[i])
-        ger(-l, v, c, a=C, overwrite_a=1)
-        C = np.hstack([C, l * v.reshape(-1, 1)])
+        ger(-l, v, c, a=C_current, overwrite_a=1)
+        C[:, K] = l * v
         row_norm_sqr -= (l * v[:top_k_index] * v[:top_k_index].conj()).real
         row_norm_sqr *= chosen
         # find maximum value in row_norm_sqr
@@ -107,8 +118,8 @@ def py_rect_maxvol(
     # parameter identity_submatrix is True, set submatrix,
     # corresponding to maxvol rows, equal to identity matrix
     if identity_submatrix:
-        C[index[:K]] = np.eye(K, dtype=C.dtype)
-    return index[:K].copy(), C
+        C[index[:K], :K] = np.eye(K, dtype=C.dtype)
+    return index[:K].copy(), C[:, :K].copy(order="F")
 
 
 def py_maxvol(A, tol=1.05, max_iters=100, top_k_index=-1):
@@ -145,9 +156,10 @@ def py_maxvol(A, tol=1.05, max_iters=100, top_k_index=-1):
     trtrs = get_lapack_funcs("trtrs", [B])
     trtrs(B, C, trans=1, lower=0, unitdiag=0, overwrite_b=1)
     trtrs(B, C, trans=1, lower=1, unitdiag=1, overwrite_b=1)
+    abs_buffer = np.empty((r, top_k_index), dtype=np.abs(C[:1, :1]).dtype)
     # C has shape (r, N) -- it is stored transposed
     # find max value in C
-    i, j = divmod(abs(C[:, :top_k_index]).argmax(), top_k_index)
+    i, j, max_abs = _argmax_abs2(C, top_k_index, abs_buffer)
     # set cgeru or zgeru for complex numbers and dger or sger for
     # float numbers
     try:
@@ -156,15 +168,17 @@ def py_maxvol(A, tol=1.05, max_iters=100, top_k_index=-1):
         ger = get_blas_funcs("ger", [C])
     # set number of iters to 0
     iters = 0
+    tmp_row = np.empty(C.shape[1], dtype=C.dtype)
+    tmp_column = np.empty(C.shape[0], dtype=C.dtype)
     # check if need to swap rows
-    while abs(C[i, j]) > tol and iters < max_iters:
+    while max_abs > tol and iters < max_iters:
         # add j to index and recompute C by SVM-formula
         index[i] = j
-        tmp_row = C[i].copy()
-        tmp_column = C[:, j].copy()
+        tmp_row[:] = C[i]
+        tmp_column[:] = C[:, j]
         tmp_column[i] -= 1.0
         alpha = -1.0 / C[i, j]
         ger(alpha, tmp_column, tmp_row, a=C, overwrite_a=1)
         iters += 1
-        i, j = divmod(abs(C[:, :top_k_index]).argmax(), top_k_index)
+        i, j, max_abs = _argmax_abs2(C, top_k_index, abs_buffer)
     return index[:r].copy(), C.T
