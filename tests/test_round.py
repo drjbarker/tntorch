@@ -38,6 +38,31 @@ def test_truncated_svd_eig():
         assert torch.allclose(v1, v[i])
 
 
+def test_truncated_svd_binary_tensor():
+    gt = torch.rand((2, 2, 2, 2))
+    tt = tn.truncated_svd(gt, eps=1e-12, algorithm='svd')
+
+    assert isinstance(tt, tn.Tensor)
+    assert torch.allclose(tt.torch(), gt, atol=1e-10, rtol=1e-10)
+
+
+def test_tensor_binary_svd_init():
+    gt = torch.rand((2, 2, 2, 2))
+    tt = tn.Tensor(gt, eps=1e-12, algorithm='svd')
+
+    assert torch.allclose(tt.torch(), gt, atol=1e-10, rtol=1e-10)
+
+
+def test_truncated_svd_binary_zero_tensor_has_minimal_ranks():
+    gt = torch.zeros((2, 2, 2, 2))
+    tt = tn.truncated_svd(gt, eps=0, algorithm='svd')
+
+    assert isinstance(tt, tn.Tensor)
+    assert all(core.shape[0] == 1 for core in tt.cores)
+    assert all(core.shape[-1] == 1 for core in tt.cores)
+    assert torch.allclose(tt.torch(), gt)
+
+
 def test_round_tt_svd():
 
     for i in range(100):

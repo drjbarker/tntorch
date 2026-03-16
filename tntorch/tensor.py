@@ -204,9 +204,35 @@ class Tensor(object):
         if Us is None:
             Us = [None] * N
         self.Us = Us
+        binary_tt_eps = None
         if isinstance(data, torch.Tensor):
             if data.dim() == 0:
                 data = data * torch.ones(1, device=device, dtype=data.dtype)
+
+            if eps is not None:
+                if ranks_cp is not None or ranks_tucker is not None or ranks_tt is not None:
+                    raise ValueError("Specify eps or ranks, but not both")
+
+            use_binary_tt_svd = (
+                not batch
+                and algorithm == "svd"
+                and ranks_cp is None
+                and ranks_tucker is None
+                and data.dim() > 0
+                and all(mode == 2 for mode in data.shape)
+                and eps is not None
+            )
+
+            if use_binary_tt_svd:
+                from tntorch.round import _binary_tt_svd
+
+                delta = eps * torch.norm(data).item()
+                tt = _binary_tt_svd(data, delta=delta, rmax=ranks_tt)
+                self.cores = tt.cores
+                self.Us = [None] * len(self.cores)
+                binary_tt_eps = eps
+                eps = None
+
             if ranks_cp is not None:  # Compute CP from full tensor: CP-ALS
                 if ranks_tt is not None:
                     raise ValueError("ALS for CP-TT is not yet supported")
@@ -398,7 +424,7 @@ class Tensor(object):
                             print()
                     if converged:
                         break
-            else:
+            elif not use_binary_tt_svd:
                 self.cores = _full_rank_tt(data, batch)
                 self.Us = [None] * self.dim()
 
@@ -433,6 +459,14 @@ class Tensor(object):
         if idxs is None:
             idxs = [torch.arange(sh, device=device) for sh in self.shape]
         self.idxs = idxs
+        if binary_tt_eps is not None:
+            data_norm = torch.norm(data)
+            if data_norm.item() == 0:
+                reached = 0.0
+            else:
+                reached = (torch.norm(data - self.torch()) / data_norm).item()
+            if reached < binary_tt_eps:
+                self.round_tucker((1 + binary_tt_eps) / (1 + reached) - 1, algorithm=algorithm)
         if eps is not None:  # TT-SVD (or TT-EIG) algorithm
             if ranks_cp is not None or ranks_tucker is not None or ranks_tt is not None:
                 raise ValueError("Specify eps or ranks, but not both")

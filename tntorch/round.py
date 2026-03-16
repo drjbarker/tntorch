@@ -4,6 +4,72 @@ from typing import Optional
 import torch
 
 
+def _binary_tt_svd(
+    tensor: torch.Tensor,
+    delta: Optional[float] = 0.0,
+    rmax=None,
+):
+    """
+    Specialised TT-SVD for tensors whose physical modes are all of size 2.
+
+    This avoids some of the overhead in the generic dense-to-TT path used for
+    binary QTT-style tensors.
+    """
+
+    import tntorch as tn
+
+    if tensor.ndim == 0:
+        return tn.Tensor([tensor.reshape(1, 1, 1)])
+
+    if any(mode != 2 for mode in tensor.shape):
+        raise ValueError("Binary TT-SVD expects every mode size to be 2")
+
+    if delta is None:
+        delta = 0.0
+
+    d = tensor.ndim
+    if rmax is None:
+        rmax = [torch.iinfo(torch.int32).max] * max(d - 1, 0)
+    elif not hasattr(rmax, "__len__"):
+        rmax = [rmax] * max(d - 1, 0)
+    else:
+        rmax = list(rmax)
+        if len(rmax) != d - 1:
+            raise ValueError("Expected one TT rank bound per interface")
+
+    work = tensor.to(torch.cdouble if tensor.is_complex() else tensor.dtype)
+    local_delta = delta / max((d - 1) ** 0.5, 1.0)
+    cores = []
+    current = work
+    r_prev = 1
+
+    for k in range(d - 1):
+        current = current.reshape(r_prev * 2, -1)
+        U, S, Vh = torch.linalg.svd(current, full_matrices=False)
+
+        s2 = S.abs().square()
+        total = s2.sum()
+        discarded = total - torch.cumsum(s2, dim=0)
+        rank = int((discarded > local_delta**2).sum().item() + 1)
+
+        rank = max(1, min(rank, S.numel(), int(rmax[k])))
+
+        U = U[:, :rank]
+        S = S[:rank]
+        Vh = Vh[:rank, :]
+
+        cores.append(U.reshape(r_prev, 2, rank))
+        current = (S[:, None] * Vh).reshape(rank, *([2] * (d - k - 1)))
+        r_prev = rank
+
+    cores.append(current.reshape(r_prev, 2, 1))
+
+    if work.dtype != tensor.dtype:
+        cores = [core.to(tensor.dtype) for core in cores]
+
+    return tn.Tensor(cores)
+
+
 def round_tt(t, **kwargs):
     """
     Copies and rounds a tensor (see :meth:`tensor.Tensor.round_tt()`.
@@ -60,7 +126,12 @@ def truncated_svd(
     batch: Optional[bool] = False,
 ):
     """
-    Decomposes a matrix M (size (m x n) in two factors U and V (sizes m x r and r x n) with bounded error (or given r).
+    Decomposes a matrix M (size (m x n) in two factors U and V (sizes m x r and
+    r x n) with bounded error (or given r).
+
+    As a special case, if a non-batch input has more than two dimensions and all
+    modes are of size 2, this dispatches to a specialised binary TT-SVD routine
+    and returns a :class:`tntorch.Tensor`.
 
     :param M: a matrix
     :param delta: if provided, maximum error norm
@@ -82,8 +153,22 @@ def truncated_svd(
         delta = 0
     if rmax is None:
         rmax = torch.iinfo(torch.int32).max
-    assert rmax >= 1
+    if hasattr(rmax, "__len__"):
+        assert all(rank >= 1 for rank in rmax)
+    else:
+        assert rmax >= 1
     assert algorithm in ("svd", "eig")
+
+    if not batch and M.ndim > 2 and all(mode == 2 for mode in M.shape):
+        if algorithm == "svd":
+            return _binary_tt_svd(M, delta=delta, rmax=rmax)
+
+        import tntorch as tn
+
+        norm = torch.norm(M).item()
+        tt = tn.Tensor(M, eps=0.0 if norm == 0 else delta / norm, algorithm=algorithm)
+        tt.round_tt(rmax=rmax, algorithm=algorithm)
+        return tt
 
     if batch:
         batch_size = M.shape[0]
