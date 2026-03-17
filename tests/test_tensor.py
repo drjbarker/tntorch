@@ -392,6 +392,22 @@ def test_round_tt():
     assert torch.norm(b.torch() - a.torch()) < 1e-8
 
 
+def test_tt_orthogonalize_steps_preserve_tensor():
+    a = tn.rand((10, 5, 6), ranks_tt=3)
+    dense = a.torch()
+    a.left_orthogonalize(0)
+    assert torch.norm(dense - a.torch()) < 1e-8
+    a.right_orthogonalize(a.dim() - 1)
+    assert torch.norm(dense - a.torch()) < 1e-8
+
+    b = tn.rand((4, 10, 5, 6), ranks_tt=3, batch=True)
+    dense_b = b.torch()
+    b.left_orthogonalize(0)
+    assert torch.norm(dense_b - b.torch()) < 1e-8
+    b.right_orthogonalize(b.dim() - 1)
+    assert torch.norm(dense_b - b.torch()) < 1e-8
+
+
 def test_set_item():
     a = tn.rand((10, 5, 6), ranks_tt=3)
     b = a.torch()

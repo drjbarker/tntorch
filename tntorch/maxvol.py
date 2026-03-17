@@ -185,6 +185,7 @@ def py_maxvol(A, tol=1.05, max_iters=100, top_k_index=-1):
     return index[:r].copy(), C.T
 
 
+@torch.compile
 def torch_maxvol(A, tol=1.05, max_iters=100, top_k_index=-1):
     """
     Torch implementation of 1-volume maximization.
@@ -233,6 +234,7 @@ def torch_maxvol(A, tol=1.05, max_iters=100, top_k_index=-1):
     return index[:r].clone(), C
 
 
+@torch.compile
 def torch_rect_maxvol(
     A,
     tol=1.0,

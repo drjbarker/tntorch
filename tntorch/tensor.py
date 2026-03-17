@@ -104,6 +104,46 @@ def _full_rank_tt(
     return result
 
 
+def _left_orthogonalize_tt_step(core, next_core):
+    q, r = torch.linalg.qr(core.reshape(-1, core.shape[-1]))
+    new_core = q.reshape(core.shape[:-1] + (q.shape[1],))
+    next_unfolded = next_core.reshape(next_core.shape[0], -1)
+    new_next_core = (r @ next_unfolded).reshape((r.shape[0],) + next_core.shape[1:])
+    return new_core, new_next_core, r
+
+
+def _left_orthogonalize_tt_step_batch(core, next_core):
+    q, r = torch.linalg.qr(core.reshape(core.shape[0], -1, core.shape[-1]))
+    new_core = q.reshape(core.shape[:-1] + (q.shape[2],))
+    next_unfolded = next_core.reshape(next_core.shape[0], next_core.shape[1], -1)
+    new_next_core = (r @ next_unfolded).reshape(
+        (r.shape[0], r.shape[1]) + next_core.shape[2:]
+    )
+    return new_core, new_next_core, r
+
+
+def _right_orthogonalize_tt_step(prev_core, core):
+    q, l = torch.linalg.qr(core.reshape(core.shape[0], -1).permute(1, 0))
+    l = l.permute(1, 0)
+    q = q.permute(1, 0)
+    new_core = q.reshape((q.shape[0],) + core.shape[1:])
+    prev_unfolded = prev_core.reshape(-1, prev_core.shape[-1])
+    new_prev_core = (prev_unfolded @ l).reshape(prev_core.shape[:-1] + (l.shape[1],))
+    return new_prev_core, new_core, l
+
+
+def _right_orthogonalize_tt_step_batch(prev_core, core):
+    q, l = torch.linalg.qr(core.reshape(core.shape[0], core.shape[1], -1).permute(0, 2, 1))
+    l = l.permute(0, 2, 1)
+    q = q.permute(0, 2, 1)
+    new_core = q.reshape((q.shape[:2]) + core.shape[2:])
+    prev_unfolded = prev_core.reshape(prev_core.shape[0], -1, prev_core.shape[-1])
+    new_prev_core = (prev_unfolded @ l).reshape(
+        prev_core.shape[:-1] + (l.shape[2],)
+    )
+    return new_prev_core, new_core, l
+
+
 class Tensor(object):
     """
     Class for all tensor networks. Currently supported: `tensor train (TT) <https://epubs.siam.org/doi/pdf/10.1137/090752286>`_, `CANDECOMP/PARAFAC (CP) <https://epubs.siam.org/doi/pdf/10.1137/07070111X>`_, `Tucker <https://epubs.siam.org/doi/pdf/10.1137/S0895479898346995>`_, and hybrid formats.
@@ -1810,6 +1850,107 @@ class Tensor(object):
     Rounding and orthogonalization
     """
 
+    def _is_plain_tt(self):
+        if any(U is not None for U in self.Us):
+            return False
+        target_dim = 4 if self.batch else 3
+        return all(core.dim() == target_dim for core in self.cores)
+
+    def _can_left_orthogonalize_tt(self, mu: int):
+        target_dim = 4 if self.batch else 3
+        return (
+            self.Us[mu] is None
+            and self.cores[mu].dim() == target_dim
+            and self.cores[mu + 1].dim() == target_dim
+        )
+
+    def _can_right_orthogonalize_tt(self, mu: int):
+        target_dim = 4 if self.batch else 3
+        return (
+            self.Us[mu] is None
+            and self.cores[mu].dim() == target_dim
+            and self.cores[mu - 1].dim() == target_dim
+        )
+
+    def _left_orthogonalize_tt(self, mu: int):
+        if self.batch:
+            self.cores[mu], self.cores[mu + 1], R = _left_orthogonalize_tt_step_batch(
+                self.cores[mu], self.cores[mu + 1]
+            )
+        else:
+            self.cores[mu], self.cores[mu + 1], R = _left_orthogonalize_tt_step(
+                self.cores[mu], self.cores[mu + 1]
+            )
+        return R
+
+    def _right_orthogonalize_tt(self, mu: int):
+        if self.batch:
+            self.cores[mu - 1], self.cores[mu], L = _right_orthogonalize_tt_step_batch(
+                self.cores[mu - 1], self.cores[mu]
+            )
+        else:
+            self.cores[mu - 1], self.cores[mu], L = _right_orthogonalize_tt_step(
+                self.cores[mu - 1], self.cores[mu]
+            )
+        return L
+
+    def _orthogonality_check_atol(self):
+        real_dtype = self.cores[0].real.dtype if self.cores[0].is_complex() else self.cores[0].dtype
+        scale = max(max(core.shape) for core in self.cores)
+        return 1000 * torch.finfo(real_dtype).eps * max(1, scale)
+
+    def _check_left_orthogonal_tt(self, atol: Optional[float] = None):
+        if atol is None:
+            atol = self._orthogonality_check_atol()
+        for mu in range(self.dim() - 1):
+            unfolded = tn.left_unfolding(self.cores[mu], batch=self.batch)
+            if self.batch:
+                gram = unfolded.adjoint() @ unfolded
+                eye = torch.eye(
+                    gram.shape[-1], dtype=gram.dtype, device=gram.device
+                ).expand(gram.shape[0], -1, -1)
+            else:
+                gram = unfolded.adjoint() @ unfolded
+                eye = torch.eye(gram.shape[-1], dtype=gram.dtype, device=gram.device)
+            error = torch.linalg.norm(gram - eye).item()
+            if error > atol:
+                raise ValueError(
+                    f"Tensor is not left-orthogonal at core {mu}: residual {error} exceeds tolerance {atol}"
+                )
+
+    def _check_right_orthogonal_tt(self, atol: Optional[float] = None):
+        if atol is None:
+            atol = self._orthogonality_check_atol()
+        for mu in range(1, self.dim()):
+            unfolded = tn.right_unfolding(self.cores[mu], batch=self.batch)
+            if self.batch:
+                gram = unfolded @ unfolded.adjoint()
+                eye = torch.eye(
+                    gram.shape[-1], dtype=gram.dtype, device=gram.device
+                ).expand(gram.shape[0], -1, -1)
+            else:
+                gram = unfolded @ unfolded.adjoint()
+                eye = torch.eye(gram.shape[-1], dtype=gram.dtype, device=gram.device)
+            error = torch.linalg.norm(gram - eye).item()
+            if error > atol:
+                raise ValueError(
+                    f"Tensor is not right-orthogonal at core {mu}: residual {error} exceeds tolerance {atol}"
+                )
+
+    def _assert_tt_orthogonalized(
+        self, orthogonalized: str, atol: Optional[float] = None
+    ):
+        if not self._is_plain_tt():
+            raise ValueError(
+                "orthogonalized hints are only valid for pure TT tensors without Tucker factors"
+            )
+        if orthogonalized == "left":
+            self._check_left_orthogonal_tt(atol=atol)
+        elif orthogonalized == "right":
+            self._check_right_orthogonal_tt(atol=atol)
+        else:
+            raise ValueError("orthogonalized must be one of None, 'left', or 'right'")
+
     def factor_orthogonalize(self, mu: int):
         """
         Pushes the factor's non-orthogonal part to its corresponding core.
@@ -1854,24 +1995,18 @@ class Tensor(object):
         """
 
         assert 0 <= mu < self.dim() - 1
-        self.factor_orthogonalize(mu)
-        Q, R = torch.linalg.qr(tn.left_unfolding(self.cores[mu], batch=self.batch))
-
-        if self.batch:
-            self.cores[mu] = Q.reshape(self.cores[mu].shape[:-1] + (Q.shape[2],))
+        if self._can_left_orthogonalize_tt(mu):
+            R = self._left_orthogonalize_tt(mu)
         else:
-            self.cores[mu] = Q.reshape(self.cores[mu].shape[:-1] + (Q.shape[1],))
-
-        rightcoreR = tn.right_unfolding(self.cores[mu + 1], batch=self.batch)
-
-        if self.batch:
-            self.cores[mu + 1] = (R @ rightcoreR).reshape(
-                (R.shape[0], R.shape[1]) + self.cores[mu + 1].shape[2:]
-            )
-        else:
-            self.cores[mu + 1] = (R @ rightcoreR).reshape(
-                (R.shape[0],) + self.cores[mu + 1].shape[1:]
-            )
+            self.factor_orthogonalize(mu)
+            if self.batch:
+                self.cores[mu], self.cores[mu + 1], R = _left_orthogonalize_tt_step_batch(
+                    self.cores[mu], self.cores[mu + 1]
+                )
+            else:
+                self.cores[mu], self.cores[mu + 1], R = _left_orthogonalize_tt_step(
+                    self.cores[mu], self.cores[mu + 1]
+                )
         return R
 
     def right_orthogonalize(self, mu: int):
@@ -1889,35 +2024,18 @@ class Tensor(object):
         """
 
         assert 1 <= mu < self.dim()
-        self.factor_orthogonalize(mu)
-        # Torch has no rq() decomposition
-        if self.batch:
-            Q, L = torch.linalg.qr(
-                tn.right_unfolding(self.cores[mu], batch=self.batch).permute(0, 2, 1)
-            )
-            L = L.permute(0, 2, 1)
-            Q = Q.permute(0, 2, 1)
+        if self._can_right_orthogonalize_tt(mu):
+            L = self._right_orthogonalize_tt(mu)
         else:
-            Q, L = torch.linalg.qr(
-                tn.right_unfolding(self.cores[mu], batch=self.batch).permute(1, 0)
-            )
-            L = L.permute(1, 0)
-            Q = Q.permute(1, 0)
-
-        if self.batch:
-            self.cores[mu] = Q.reshape((Q.shape[:2]) + self.cores[mu].shape[2:])
-        else:
-            self.cores[mu] = Q.reshape((Q.shape[0],) + self.cores[mu].shape[1:])
-
-        leftcoreL = tn.left_unfolding(self.cores[mu - 1], batch=self.batch)
-        if self.batch:
-            self.cores[mu - 1] = (leftcoreL @ L).reshape(
-                self.cores[mu - 1].shape[:-1] + (L.shape[2],)
-            )
-        else:
-            self.cores[mu - 1] = (leftcoreL @ L).reshape(
-                self.cores[mu - 1].shape[:-1] + (L.shape[1],)
-            )
+            self.factor_orthogonalize(mu)
+            if self.batch:
+                self.cores[mu - 1], self.cores[mu], L = _right_orthogonalize_tt_step_batch(
+                    self.cores[mu - 1], self.cores[mu]
+                )
+            else:
+                self.cores[mu - 1], self.cores[mu], L = _right_orthogonalize_tt_step(
+                    self.cores[mu - 1], self.cores[mu]
+                )
         return L
 
     def orthogonalize(self, mu: int):
@@ -1936,6 +2054,35 @@ class Tensor(object):
         if mu < 0:
             mu += self.dim()
 
+        if self._is_plain_tt():
+            if self.batch:
+                batch_size = self.cores[0].shape[0]
+                L = torch.ones(
+                    batch_size,
+                    1,
+                    1,
+                    dtype=self.cores[0].dtype,
+                    device=self.cores[0].device,
+                )
+                R = torch.ones(
+                    batch_size,
+                    1,
+                    1,
+                    dtype=self.cores[0].dtype,
+                    device=self.cores[0].device,
+                )
+            else:
+                L = torch.ones(
+                    1, 1, dtype=self.cores[0].dtype, device=self.cores[0].device
+                )
+                R = torch.ones(
+                    1, 1, dtype=self.cores[0].dtype, device=self.cores[0].device
+                )
+            for i in range(mu):
+                R = self._left_orthogonalize_tt(i)
+            for i in range(self.dim() - 1, mu, -1):
+                L = self._right_orthogonalize_tt(i)
+            return R, L
         self._cp_to_tt()
         if self.batch:
             batch_size = self.cores[0].shape[0]
@@ -2053,6 +2200,9 @@ class Tensor(object):
         rmax: Optional[Union[int, Sequence[int]]] = None,
         algorithm: Optional[str] = "svd",
         verbose: Optional[bool] = False,
+        orthogonalized: Optional[str] = None,
+        check_orthogonalized: Optional[bool] = False,
+        orthogonalized_atol: Optional[float] = None,
     ):
         """
         Tries to recompress this tensor in place by reducing its TT ranks.
@@ -2063,66 +2213,116 @@ class Tensor(object):
         :param rmax: all ranks should be rmax at most (default: no limit)
         :param algorithm: 'svd' (default) or 'eig'. The latter can be faster, but less accurate
         :param verbose:
+        :param orthogonalized: optionally declare the current TT as already 'left' or 'right' orthogonal
+        :param check_orthogonalized: if True, validate the declared orthogonalized state and raise if it is false
+        :param orthogonalized_atol: absolute tolerance used when checking orthogonality
         """
 
         N = self.dim()
         if not hasattr(rmax, "__len__"):
             rmax = [rmax] * (N - 1)
         assert len(rmax) == N - 1
+        if orthogonalized not in (None, "left", "right"):
+            raise ValueError("orthogonalized must be one of None, 'left', or 'right'")
 
         self._cp_to_tt()
         start = time.time()
-        self.orthogonalize(N - 1)  # Make everything left-orthogonal
+        if orthogonalized is None:
+            self.orthogonalize(N - 1)  # Make everything left-orthogonal
+            orthogonalized = "left"
+        else:
+            if not self._is_plain_tt():
+                raise ValueError(
+                    "orthogonalized hints require a pure TT tensor without Tucker factors; call .tt() first or leave orthogonalized=None"
+                )
+            if check_orthogonalized:
+                self._assert_tt_orthogonalized(
+                    orthogonalized, atol=orthogonalized_atol
+                )
         if verbose:
             print("Orthogonalization time:", time.time() - start)
         if self.batch:
             delta = None
         else:
+            scale_core = self.cores[-1] if orthogonalized == "left" else self.cores[0]
             delta = (
                 eps
                 / max(
                     1,
                     torch.sqrt(
                         torch.tensor(
-                            [N - 1], dtype=torch.float64, device=self.cores[-1].device
+                            [N - 1], dtype=torch.float64, device=scale_core.device
                         )
                     ),
                 )
-                * torch.norm(self.cores[-1])
+                * torch.norm(scale_core)
             )
             delta = delta.item()
 
-        for mu in range(N - 1, 0, -1):
-            M = tn.right_unfolding(self.cores[mu], batch=self.batch)
-            left, right = tn.truncated_svd(
-                M,
-                delta=delta,
-                rmax=rmax[mu - 1],
-                left_ortho=False,
-                algorithm=algorithm,
-                verbose=verbose,
-                batch=self.batch,
-            )
+        if orthogonalized == "left":
+            for mu in range(N - 1, 0, -1):
+                M = tn.right_unfolding(self.cores[mu], batch=self.batch)
+                left, right = tn.truncated_svd(
+                    M,
+                    delta=delta,
+                    rmax=rmax[mu - 1],
+                    left_ortho=False,
+                    algorithm=algorithm,
+                    verbose=verbose,
+                    batch=self.batch,
+                )
 
-            if self.batch:
-                self.cores[mu] = right.reshape(
-                    [
-                        self.cores[mu].shape[0],
-                        -1,
-                        self.cores[mu].shape[2],
-                        self.cores[mu].shape[3],
-                    ]
+                if self.batch:
+                    self.cores[mu] = right.reshape(
+                        [
+                            self.cores[mu].shape[0],
+                            -1,
+                            self.cores[mu].shape[2],
+                            self.cores[mu].shape[3],
+                        ]
+                    )
+                    self.cores[mu - 1] = torch.einsum(
+                        "bijk,bkl->bijl", (self.cores[mu - 1], left)
+                    )
+                else:
+                    self.cores[mu] = right.reshape(
+                        [-1, self.cores[mu].shape[1], self.cores[mu].shape[2]]
+                    )
+                    self.cores[mu - 1] = torch.einsum(
+                        "ijk,kl", (self.cores[mu - 1], left)
+                    )
+        else:
+            for mu in range(N - 1):
+                M = tn.left_unfolding(self.cores[mu], batch=self.batch)
+                left, right = tn.truncated_svd(
+                    M,
+                    delta=delta,
+                    rmax=rmax[mu],
+                    left_ortho=True,
+                    algorithm=algorithm,
+                    verbose=verbose,
+                    batch=self.batch,
                 )
-                self.cores[mu - 1] = torch.einsum(
-                    "bijk,bkl->bijl", (self.cores[mu - 1], left)
-                )  # Pass factor to the left
-            else:
-                self.cores[mu] = right.reshape(
-                    [-1, self.cores[mu].shape[1], self.cores[mu].shape[2]]
-                )
-                self.cores[mu - 1] = torch.einsum(
-                    "ijk,kl", (self.cores[mu - 1], left)
-                )  # Pass factor to the left
+
+                if self.batch:
+                    self.cores[mu] = left.reshape(
+                        [
+                            self.cores[mu].shape[0],
+                            self.cores[mu].shape[1],
+                            self.cores[mu].shape[2],
+                            -1,
+                        ]
+                    )
+                    self.cores[mu + 1] = torch.einsum(
+                        "bkl,blij->bkij", (right, self.cores[mu + 1])
+                    )
+                else:
+                    self.cores[mu] = left.reshape(
+                        [self.cores[mu].shape[0], self.cores[mu].shape[1], -1]
+                    )
+                    self.cores[mu + 1] = torch.einsum(
+                        "kl,lij->kij", (right, self.cores[mu + 1])
+                    )
 
     def round(self, eps: float = 1e-14, **kwargs):
         """
@@ -2268,7 +2468,8 @@ class Tensor(object):
                 Us.append(self.Us[n].clone())
         if hasattr(self, "idxs"):
             return tn.Tensor(cores, Us=Us, idxs=self.idxs, batch=self.batch)
-        return tn.Tensor(cores, Us=Us, batch=self.batch)
+        else:
+            return tn.Tensor(cores, Us=Us, batch=self.batch)
 
     def numel(self):
         """

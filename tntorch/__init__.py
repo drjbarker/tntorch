@@ -8,7 +8,10 @@ from .interpolation import *
 from .logic import *
 from .metrics import *
 from .ops import *
+from .qtt import *
 from .round import *
 from .tensor import *
 from .tools import *
 from .matrix import *
+
+from . import qtt
