@@ -71,6 +71,8 @@ def from_vector(
 ):
     """
     Quantize a dense vector into TT form.
+
+    The tolerance ``eps`` is interpreted as a relative TT-SVD error.
     """
 
     base = _validate_base(base)
@@ -79,11 +81,7 @@ def from_vector(
         raise ValueError("vector must be one-dimensional")
     num_bits = _power_length(vector.shape[0], base)
     quantized = vector.reshape([base] * num_bits)
-    return Tensor(
-        quantized,
-        eps=_absolute_to_relative_eps(torch.linalg.norm(quantized), eps),
-        algorithm=algorithm,
-    )
+    return Tensor(quantized, eps=eps, algorithm=algorithm)
 
 
 def from_matrix_interleaved(

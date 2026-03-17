@@ -31,6 +31,18 @@ def test_qtt_from_vector_roundtrip():
     torch.testing.assert_close(qtt.torch(), vector.reshape(2, 2, 2))
 
 
+def test_qtt_from_vector_eps_is_relative():
+    vector = torch.arange(64, dtype=torch.float64).to(torch.cdouble)
+    scaled = 1000 * vector
+
+    qtt = tn.qtt.from_vector(vector, eps=1e-4)
+    scaled_qtt = tn.qtt.from_vector(scaled, eps=1e-4)
+
+    torch.testing.assert_close(qtt.ranks_tt, scaled_qtt.ranks_tt)
+    assert tn.relative_error(vector.reshape(2, 2, 2, 2, 2, 2), qtt) <= 1e-4
+    assert tn.relative_error(scaled.reshape(2, 2, 2, 2, 2, 2), scaled_qtt) <= 1e-4
+
+
 def test_qtt_from_vector_rejects_non_power_length():
     vector = torch.arange(6, dtype=torch.float64)
 
