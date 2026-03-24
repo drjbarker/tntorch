@@ -45,7 +45,7 @@ def _binary_tt_svd(
         if len(rmax) != d - 1:
             raise ValueError("Expected one TT rank bound per interface")
 
-    work = tensor.to(torch.cdouble if tensor.is_complex() else tensor.dtype)
+    work = tensor
     local_delta = delta / max((d - 1) ** 0.5, 1.0)
     if torch.is_tensor(local_delta):
         local_delta_sq = local_delta.reshape(-1, 1).abs().square()
@@ -286,7 +286,7 @@ def truncated_svd(
     if batch:
         rank = max(1, int(min(rmax, S.shape[-1])))
     else:
-        reverse = torch.arange(len(S) - 1, -1, -1)
+        reverse = torch.arange(len(S) - 1, -1, -1, device=S.device)
         where = torch.where((torch.cumsum(S[reverse], dim=0) <= delta**2))[0]
 
         if len(where) == 0:

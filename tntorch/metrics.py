@@ -247,11 +247,13 @@ def sum(t, dim=None, keepdim=False, _normalize=False):
     if _normalize:
         us = [
             (1.0 / t.shape[d])
-            * torch.ones(t.shape[d], dtype=t.cores[0].dtype).to(device)
+            * torch.ones(t.shape[d], dtype=t.cores[0].dtype, device=device)
             for d in dim
         ]
     else:
-        us = [torch.ones(t.shape[d], dtype=t.cores[0].dtype).to(device) for d in dim]
+        us = [
+            torch.ones(t.shape[d], dtype=t.cores[0].dtype, device=device) for d in dim
+        ]
 
     result = tn.ttm(t, us, dim)
     if keepdim:
@@ -273,7 +275,9 @@ def mean(t, dim=None, marginals=None, keepdim=False):
     """
 
     if marginals is not None:
-        pdfcores = [torch.ones(sh) / sh for sh in t.shape]
+        device = t.cores[0].device
+        dtype = t.cores[0].dtype
+        pdfcores = [torch.ones(sh, dtype=dtype, device=device) / sh for sh in t.shape]
         if dim is None:
             dim = range(t.dim())
         for d, marg in zip(dim, marginals):
@@ -402,7 +406,13 @@ def hadamard_sum(ts, algorithm="exact", eps=None):
 
         factor = c.permute(0, 2, 1)
         factor = torch.reshape(factor, [-1, factor.shape[-1]])
-        core = torch.zeros(factor.shape[1], factor.shape[1] + 1, factor.shape[0])
+        core = torch.zeros(
+            factor.shape[1],
+            factor.shape[1] + 1,
+            factor.shape[0],
+            dtype=factor.dtype,
+            device=factor.device,
+        )
         core[:, 0, :] = factor.t()
         core = core.reshape(
             factor.shape[1] + 1, factor.shape[1], factor.shape[0]
@@ -446,7 +456,9 @@ def hadamard_sum(ts, algorithm="exact", eps=None):
     if algorithm == "exact":
         K = len(ts)
         N = ts[0].dim()
-        core = torch.ones(*[1] * K)
+        core = torch.ones(
+            *[1] * K, dtype=ts[0].cores[0].dtype, device=ts[0].cores[0].device
+        )
         for n in range(0, N):
             B = ts[0].shape[n]
             core = core[None, ...].repeat(B, *[1] * K)

@@ -303,7 +303,9 @@ class Tensor(object):
                         # Sort eigenvectors in decreasing importance
                         if batch:
                             assert len(eigvals[0]) == len(eigvals[-1])
-                            reverse = torch.arange(len(eigvals[0]) - 1, -1, -1)
+                            reverse = torch.arange(
+                                len(eigvals[0]) - 1, -1, -1, device=eigvals.device
+                            )
                             idx = torch.argsort(eigvals)[:, reverse[:ranks_cp]]
                             self.cores.append(
                                 eigvecs[
@@ -327,7 +329,9 @@ class Tensor(object):
                                     dim=2,
                                 )
                         else:
-                            reverse = torch.arange(len(eigvals) - 1, -1, -1)
+                            reverse = torch.arange(
+                                len(eigvals) - 1, -1, -1, device=eigvals.device
+                            )
                             idx = torch.argsort(eigvals)[reverse[:ranks_cp]]
                             self.cores.append(eigvecs[:, idx])
                             if (
@@ -531,7 +535,9 @@ class Tensor(object):
                 other = Tensor(
                     [
                         torch.ones(
-                            [self.shape[0], 1, self.shape[n + 1], 1], device=device
+                            [self.shape[0], 1, self.shape[n + 1], 1],
+                            device=device,
+                            dtype=self.cores[0].dtype,
                         )
                         for n in range(self.dim())
                     ],
@@ -540,7 +546,11 @@ class Tensor(object):
             else:
                 other = Tensor(
                     [
-                        torch.ones([1, self.shape[n], 1], device=device)
+                        torch.ones(
+                            [1, self.shape[n], 1],
+                            device=device,
+                            dtype=self.cores[0].dtype,
+                        )
                         for n in range(self.dim())
                     ]
                 )
@@ -577,6 +587,8 @@ class Tensor(object):
         for n in range(this.dim()):
             core1 = this.cores[n]
             core2 = other.cores[n]
+            dtype = torch.promote_types(core1.dtype, core2.dtype)
+            device = core1.device
 
             # CP + CP -> CP, other combinations -> TT
             if core1.dim() == m and core2.dim() == m:
@@ -601,6 +613,7 @@ class Tensor(object):
                                 core1.shape[2],
                                 core1.shape[3],
                                 device=device,
+                                dtype=dtype,
                             ),
                         ],
                         dim=1,
@@ -614,6 +627,7 @@ class Tensor(object):
                                 core1.shape[2],
                                 core2.shape[3],
                                 device=device,
+                                dtype=dtype,
                             ),
                         ],
                         dim=3,
@@ -626,6 +640,7 @@ class Tensor(object):
                                 core2.shape[2],
                                 core2.shape[3],
                                 device=device,
+                                dtype=dtype,
                             ),
                             core2,
                         ],
@@ -639,6 +654,7 @@ class Tensor(object):
                                 core2.shape[2],
                                 core1.shape[3],
                                 device=device,
+                                dtype=dtype,
                             ),
                             slice2,
                         ],
@@ -653,6 +669,7 @@ class Tensor(object):
                             torch.zeros(
                                 [core2.shape[0], core1.shape[1], core1.shape[2]],
                                 device=device,
+                                dtype=dtype,
                             ),
                         ],
                         dim=0,
@@ -665,6 +682,7 @@ class Tensor(object):
                                 core1.shape[1],
                                 core2.shape[2],
                                 device=device,
+                                dtype=dtype,
                             ),
                         ],
                         dim=2,
@@ -674,6 +692,7 @@ class Tensor(object):
                             torch.zeros(
                                 [core1.shape[0], core2.shape[1], core2.shape[2]],
                                 device=device,
+                                dtype=dtype,
                             ),
                             core2,
                         ],
@@ -686,6 +705,7 @@ class Tensor(object):
                                 core2.shape[1],
                                 core1.shape[2],
                                 device=device,
+                                dtype=dtype,
                             ),
                             slice2,
                         ],
@@ -705,23 +725,23 @@ class Tensor(object):
             if self.batch:
                 c1_st = torch.zeros(
                     [core2.shape[0], core2.shape[1], this.shape[n + 1], core1.shape[3]],
-                    dtype=core1.dtype,
+                    dtype=dtype,
                     device=core1.device,
                 )
                 c2_st = torch.zeros(
                     [core1.shape[0], core1.shape[1], this.shape[n + 1], core2.shape[3]],
-                    dtype=core1.dtype,
+                    dtype=dtype,
                     device=core2.device,
                 )
             else:
                 c1_st = torch.zeros(
                     [core2.shape[0], this.shape[n], core1.shape[2]],
-                    dtype=core1.dtype,
+                    dtype=dtype,
                     device=core1.device,
                 )
                 c2_st = torch.zeros(
                     [core1.shape[0], this.shape[n], core2.shape[2]],
-                    dtype=core1.dtype,
+                    dtype=dtype,
                     device=core2.device,
                 )
 
@@ -1330,9 +1350,16 @@ class Tensor(object):
             if this_mode == "none":
                 if self.batch:
                     if batch_dim_processed:
+                        reference_core_idx = min(
+                            max(counter - 1, 0), len(self.cores) - 1
+                        )
                         core = torch.cat(
                             [
-                                torch.eye(self.ranks_tt[counter - 1].item())[None, ...]
+                                torch.eye(
+                                    self.ranks_tt[counter - 1].item(),
+                                    dtype=self.cores[reference_core_idx].dtype,
+                                    device=self.cores[reference_core_idx].device,
+                                )[None, ...]
                                 for _ in range(batch_size)
                             ]
                         )
@@ -1342,9 +1369,14 @@ class Tensor(object):
                     else:
                         raise ValueError("Cannot change batch dimension")
                 else:
+                    reference_core_idx = min(counter, len(self.cores) - 1)
                     insert_core(
                         factors,
-                        torch.eye(self.ranks_tt[counter].item())[:, None, :],
+                        torch.eye(
+                            self.ranks_tt[counter].item(),
+                            dtype=self.cores[reference_core_idx].dtype,
+                            device=self.cores[reference_core_idx].device,
+                        )[:, None, :],
                         key=slice(None),
                         U=None,
                     )
@@ -1522,7 +1554,12 @@ class Tensor(object):
         key = self._process_key(key)
         scalar = False
         if isinstance(value, np.ndarray):
-            value = tn.Tensor(torch.tensor(value), batch=self.batch)
+            value = tn.Tensor(
+                torch.tensor(
+                    value, dtype=self.cores[0].dtype, device=self.cores[0].device
+                ),
+                batch=self.batch,
+            )
         elif isinstance(value, torch.Tensor):
             if value.dim() == 0:
                 value = value.item()
@@ -1567,18 +1604,42 @@ class Tensor(object):
             if scalar:
                 if self.batch:
                     if self.cores[i].dim() == 4:
-                        add_core = torch.zeros(self.shape[0], 1, self.shape[i + 1], 1)
+                        add_core = torch.zeros(
+                            self.shape[0],
+                            1,
+                            self.shape[i + 1],
+                            1,
+                            dtype=self.cores[i].dtype,
+                            device=self.cores[i].device,
+                        )
                     else:
-                        add_core = torch.zeros(self.shape[0], self.shape[i + 1], 1)
+                        add_core = torch.zeros(
+                            self.shape[0],
+                            self.shape[i + 1],
+                            1,
+                            dtype=self.cores[i].dtype,
+                            device=self.cores[i].device,
+                        )
 
                     add_core[key[0], ..., key[i + 1], :] += 1
                     if i == 0:
                         add_core *= value
                 else:
                     if self.cores[i].dim() == 3:
-                        add_core = torch.zeros(1, self.shape[i], 1)
+                        add_core = torch.zeros(
+                            1,
+                            self.shape[i],
+                            1,
+                            dtype=self.cores[i].dtype,
+                            device=self.cores[i].device,
+                        )
                     else:
-                        add_core = torch.zeros(self.shape[i], 1)
+                        add_core = torch.zeros(
+                            self.shape[i],
+                            1,
+                            dtype=self.cores[i].dtype,
+                            device=self.cores[i].device,
+                        )
 
                     add_core[..., key[i], :] += 1
                     if i == 0:
@@ -1605,12 +1666,16 @@ class Tensor(object):
                             value.cores[i].shape[1],
                             self.shape[i + 1],
                             value.cores[i].shape[3],
+                            dtype=value.cores[i].dtype,
+                            device=value.cores[i].device,
                         )
                     else:
                         add_core = torch.zeros(
                             self.cores[i].shape[0],
                             self.shape[i + 1],
                             value.cores[i].shape[2],
+                            dtype=value.cores[i].dtype,
+                            device=value.cores[i].device,
                         )
 
                     if isinstance(key[i + 1], int):
@@ -1631,9 +1696,16 @@ class Tensor(object):
                             value.cores[i].shape[0],
                             self.shape[i],
                             value.cores[i].shape[2],
+                            dtype=value.cores[i].dtype,
+                            device=value.cores[i].device,
                         )
                     else:
-                        add_core = torch.zeros(self.shape[i], value.cores[i].shape[1])
+                        add_core = torch.zeros(
+                            self.shape[i],
+                            value.cores[i].shape[1],
+                            dtype=value.cores[i].dtype,
+                            device=value.cores[i].device,
+                        )
 
                     add_core[..., key[i], :] += value.cores[i]
             add_cores.append(add_core)
@@ -1842,7 +1914,7 @@ class Tensor(object):
             shape2 = (factor.shape[1] + 1, factor.shape[1], factor.shape[0])
             order = (0, 2, 1)
 
-        core = torch.zeros(shape1)
+        core = torch.zeros(shape1, dtype=factor.dtype, device=factor.device)
         core[..., 0, :] = factor.transpose(-1, -2)
         return core.reshape(shape2).permute(order)[..., :-1, :, :]
 
@@ -2086,11 +2158,15 @@ class Tensor(object):
         self._cp_to_tt()
         if self.batch:
             batch_size = self.cores[0].shape[0]
-            L = torch.ones(batch_size, 1, 1)
-            R = torch.ones(batch_size, 1, 1)
+            L = torch.ones(
+                batch_size, 1, 1, dtype=self.cores[0].dtype, device=self.cores[0].device
+            )
+            R = torch.ones(
+                batch_size, 1, 1, dtype=self.cores[0].dtype, device=self.cores[0].device
+            )
         else:
-            L = torch.ones(1, 1)
-            R = torch.ones(1, 1)
+            L = torch.ones(1, 1, dtype=self.cores[0].dtype, device=self.cores[0].device)
+            R = torch.ones(1, 1, dtype=self.cores[0].dtype, device=self.cores[0].device)
         for i in range(mu):
             R = self.left_orthogonalize(i)
         for i in range(self.dim() - 1, mu, -1):
@@ -2251,7 +2327,11 @@ class Tensor(object):
                     1,
                     torch.sqrt(
                         torch.tensor(
-                            [N - 1], dtype=torch.float64, device=scale_core.device
+                            [N - 1],
+                            dtype=scale_core.real.dtype
+                            if scale_core.is_complex()
+                            else scale_core.dtype,
+                            device=scale_core.device,
                         )
                     ),
                 )
@@ -2494,6 +2574,32 @@ class Tensor(object):
                 result += self.Us[n].numel()
         return result
 
+    def storage_bytes(self):
+        """
+        Counts the storage used by the compressed tensor nodes in bytes.
+
+        This includes TT/CP cores and Tucker factor matrices, but not Python
+        object overhead or temporary workspace used during computations.
+
+        :return: an integer
+        """
+
+        result = 0
+        for n in range(self.dim()):
+            result += self.cores[n].numel() * self.cores[n].element_size()
+            if self.Us[n] is not None:
+                result += self.Us[n].numel() * self.Us[n].element_size()
+        return result
+
+    def storage_megabytes(self):
+        """
+        Returns the compressed tensor storage in mebibytes.
+
+        :return: a float
+        """
+
+        return self.storage_bytes() / 1024**2
+
     def repeat(self, *rep: Sequence[int]):
         """
         Returns another tensor repeated along one or more axes; works like PyTorch's `repeat()`.
@@ -2511,7 +2617,14 @@ class Tensor(object):
             len(rep) > self.dim()
         ):  # If requested, we add trailing new dimensions. We use CP as is cheaper
             for n in range(self.dim(), len(rep)):
-                t.cores.append(torch.ones(rep[n], self.cores[-1].shape[-1]))
+                t.cores.append(
+                    torch.ones(
+                        rep[n],
+                        self.cores[-1].shape[-1],
+                        dtype=self.cores[-1].dtype,
+                        device=self.cores[-1].device,
+                    )
+                )
                 t.Us.append(None)
         for n in range(self.dim()):
             if t.Us[n] is not None:

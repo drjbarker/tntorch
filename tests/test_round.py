@@ -59,6 +59,19 @@ def test_truncated_svd_binary_tensor_batch():
             assert torch.allclose(core, tt.cores[j][i, ...])
 
 
+def test_truncated_svd_binary_tensor_preserves_input_dtype():
+    for dtype in (torch.float32, torch.complex64):
+        if dtype.is_complex:
+            gt = torch.rand((2, 2, 2, 2), dtype=torch.float32).to(dtype)
+            gt = gt + 1j * torch.rand((2, 2, 2, 2), dtype=torch.float32).to(dtype)
+        else:
+            gt = torch.rand((2, 2, 2, 2), dtype=dtype)
+
+        tt = tn.truncated_svd(gt, eps=1e-12, algorithm='svd')
+
+        assert all(core.dtype == dtype for core in tt.cores)
+
+
 def test_tensor_binary_svd_init():
     gt = torch.rand((2, 2, 2, 2))
     tt = tn.Tensor(gt, eps=1e-12, algorithm='svd')

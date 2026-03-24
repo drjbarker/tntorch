@@ -75,6 +75,59 @@ def test_tucker_tensor():
         assert torch.allclose(c.torch(), b.torch()[i])
 
 
+def test_storage_bytes_and_megabytes_include_factors():
+    tensor = tn.rand((4, 5, 6), ranks_tucker=2)
+
+    expected_bytes = sum(
+        core.numel() * core.element_size() for core in tensor.cores
+    ) + sum(
+        factor.numel() * factor.element_size()
+        for factor in tensor.Us
+        if factor is not None
+    )
+
+    assert tensor.storage_bytes() == expected_bytes
+    assert tensor.storage_megabytes() == pytest.approx(expected_bytes / 1024**2)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.complex64])
+def test_scalar_add_and_repeat_preserve_core_dtype(dtype):
+    if dtype.is_complex:
+        data = torch.rand((3, 4), dtype=torch.float32).to(dtype)
+        data = data + 1j * torch.rand((3, 4), dtype=torch.float32).to(dtype)
+    else:
+        data = torch.rand((3, 4), dtype=dtype)
+
+    tensor = tn.Tensor(data)
+    shifted = tensor + 1
+    repeated = shifted.repeat(2, 3, 4)
+
+    assert all(core.dtype == dtype for core in shifted.cores)
+    assert all(core.dtype == dtype for core in repeated.cores)
+    assert all(core.device == data.device for core in repeated.cores)
+
+
+@pytest.mark.parametrize("dtype", [torch.float32, torch.complex64])
+def test_mean_with_marginals_preserves_dtype(dtype):
+    if dtype.is_complex:
+        data = torch.rand((3, 4), dtype=torch.float32).to(dtype)
+        data = data + 1j * torch.rand((3, 4), dtype=torch.float32).to(dtype)
+    else:
+        data = torch.rand((3, 4), dtype=dtype)
+
+    tensor = tn.Tensor(data)
+    marginals = [
+        torch.rand(3, dtype=dtype, device=data.device),
+        torch.rand(4, dtype=dtype, device=data.device),
+    ]
+
+    result = tn.mean(tensor, dim=[0, 1], marginals=marginals)
+
+    assert isinstance(result, torch.Tensor)
+    assert result.dtype == dtype
+    assert result.device == data.device
+
+
 def test_tucker_cp_tensor():
     a = torch.rand(10, 5, 5, 5, 5)
     b = tn.Tensor(a, ranks_tucker=3, ranks_cp=4, batch=True)
